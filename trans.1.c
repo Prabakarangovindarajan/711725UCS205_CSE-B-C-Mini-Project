@@ -27,12 +27,12 @@ void exportAccountHistory(unsigned int accountNum);
 void applyInterest(FILE *fPtr);
 void undoLastTransaction(FILE *fPtr);
 
-int main(int argc, char *argv[]) {
+int main(void) {
     FILE *cfPtr;         // credit.dat file pointer
     unsigned int choice; // user's choice
 
     if ((cfPtr = fopen("credit.dat", "rb+")) == NULL) {
-        printf("%s: File could not be opened.\n", argv[0]);
+        printf("Error: File could not be opened.\n");
         exit(-1);
     }
 
@@ -60,7 +60,194 @@ int main(int argc, char *argv[]) {
     fclose(cfPtr);
 }
 
-// --- existing functions unchanged (textFile, updateRecord, deleteRecord, logTransaction, compareAccounts, showTransactionHistory, newRecord) ---
+// Compare function for qsort
+int compareAccounts(const void *a, const void *b) {
+    const struct clientData *acctA = (const struct clientData *)a;
+    const struct clientData *acctB = (const struct clientData *)b;
+    return acctA->acctNum - acctB->acctNum;
+}
+
+// Log transaction to file
+void logTransaction(const struct clientData *client, const char *action, double amount) {
+    FILE *tPtr = fopen("transactions.txt", "a");
+    if (tPtr == NULL) {
+        printf("Error opening transactions.txt\n");
+        return;
+    }
+    fprintf(tPtr, "%s %u %s %s amount %.2f\n", action, client->acctNum, 
+            client->lastName, client->firstName, amount);
+    fclose(tPtr);
+}
+
+// Create sorted text file of accounts
+void textFile(FILE *readPtr) {
+    FILE *writePtr;
+    struct clientData client;
+    int recordCount = 0;
+    struct clientData *clients = NULL;
+
+    // Count records
+    rewind(readPtr);
+    while (fread(&client, sizeof(struct clientData), 1, readPtr) == 1) {
+        if (client.acctNum != 0) {
+            recordCount++;
+        }
+    }
+
+    if (recordCount == 0) {
+        printf("No accounts to export.\n");
+        return;
+    }
+
+    // Allocate memory
+    clients = (struct clientData *)malloc(recordCount * sizeof(struct clientData));
+    if (clients == NULL) {
+        printf("Memory allocation failed.\n");
+        return;
+    }
+
+    // Read into array
+    rewind(readPtr);
+    int index = 0;
+    while (fread(&client, sizeof(struct clientData), 1, readPtr) == 1) {
+        if (client.acctNum != 0) {
+            clients[index++] = client;
+        }
+    }
+
+    // Sort accounts
+    qsort(clients, recordCount, sizeof(struct clientData), compareAccounts);
+
+    // Write to file
+    writePtr = fopen("accounts.txt", "w");
+    if (writePtr == NULL) {
+        printf("Error opening accounts.txt\n");
+        free(clients);
+        return;
+    }
+
+    fprintf(writePtr, "%-10s %-15s %-10s %s\n", "Account#", "LastName", "FirstName", "Balance");
+    fprintf(writePtr, "%-10s %-15s %-10s %s\n", "----------", "---------------", "----------", "----------");
+
+    for (int i = 0; i < recordCount; i++) {
+        fprintf(writePtr, "%-10u %-15s %-10s $%.2f\n",
+                clients[i].acctNum, clients[i].lastName, clients[i].firstName, clients[i].balance);
+    }
+
+    fclose(writePtr);
+    printf("Sorted account data exported to accounts.txt\n");
+    free(clients);
+}
+
+// Update existing record
+void updateRecord(FILE *fPtr) {
+    unsigned int accountNum;
+    struct clientData client;
+    int found = 0;
+
+    printf("Enter account number to update: ");
+    scanf("%u", &accountNum);
+
+    rewind(fPtr);
+    while (fread(&client, sizeof(struct clientData), 1, fPtr) == 1) {
+        if (client.acctNum == accountNum) {
+            printf("Current info: %s %s Balance: $%.2f\n", client.firstName, 
+                   client.lastName, client.balance);
+            printf("Enter new last name: ");
+            scanf("%14s", client.lastName);
+            printf("Enter new first name: ");
+            scanf("%9s", client.firstName);
+            printf("Enter new balance: ");
+            scanf("%lf", &client.balance);
+
+            fseek(fPtr, -(long)sizeof(struct clientData), SEEK_CUR);
+            fwrite(&client, sizeof(struct clientData), 1, fPtr);
+            printf("Account updated successfully.\n");
+            logTransaction(&client, "UPDATE", client.balance);
+            found = 1;
+            break;
+        }
+    }
+
+    if (!found) {
+        printf("Account not found.\n");
+    }
+}
+
+// Add new record
+void newRecord(FILE *fPtr) {
+    struct clientData client = {0};
+
+    printf("Enter account number: ");
+    scanf("%u", &client.acctNum);
+
+    printf("Enter last name: ");
+    scanf("%14s", client.lastName);
+
+    printf("Enter first name: ");
+    scanf("%9s", client.firstName);
+
+    printf("Enter balance: ");
+    scanf("%lf", &client.balance);
+
+    fseek(fPtr, 0, SEEK_END);
+    fwrite(&client, sizeof(struct clientData), 1, fPtr);
+    printf("New account created successfully.\n");
+    logTransaction(&client, "NEW_ACCOUNT", client.balance);
+}
+
+// Delete record (set acctNum to 0)
+void deleteRecord(FILE *fPtr) {
+    unsigned int accountNum;
+    struct clientData client;
+    int found = 0;
+
+    printf("Enter account number to delete: ");
+    scanf("%u", &accountNum);
+
+    rewind(fPtr);
+    while (fread(&client, sizeof(struct clientData), 1, fPtr) == 1) {
+        if (client.acctNum == accountNum) {
+            printf("Delete %s %s? (Y/N): ", client.firstName, client.lastName);
+            char response;
+            scanf(" %c", &response);
+
+            if (response == 'Y' || response == 'y') {
+                client.acctNum = 0;
+                fseek(fPtr, -(long)sizeof(struct clientData), SEEK_CUR);
+                fwrite(&client, sizeof(struct clientData), 1, fPtr);
+                printf("Account deleted.\n");
+                logTransaction(&client, "DELETE", 0);
+            }
+            found = 1;
+            break;
+        }
+    }
+
+    if (!found) {
+        printf("Account not found.\n");
+    }
+}
+
+// Display all transactions
+void showTransactionHistory(void) {
+    FILE *historyPtr;
+    char line[256];
+
+    historyPtr = fopen("transactions.txt", "r");
+    if (historyPtr == NULL) {
+        printf("No transaction history available.\n");
+        return;
+    }
+
+    printf("\n========== TRANSACTION HISTORY ==========\n");
+    while (fgets(line, sizeof(line), historyPtr) != NULL) {
+        printf("%s", line);
+    }
+    printf("=========================================\n");
+
+    fclose(historyPtr);
+}
 
 // new feature 1: search by last name
 void searchByLastName(FILE *fPtr) {
@@ -126,7 +313,7 @@ void applyInterest(FILE *fPtr) {
         if (client.acctNum != 0) {
             double interest = client.balance * rate;
             client.balance += interest;
-            fseek(fPtr, -sizeof(struct clientData), SEEK_CUR);
+            fseek(fPtr, -(long)sizeof(struct clientData), SEEK_CUR);
             fwrite(&client, sizeof(struct clientData), 1, fPtr);
             logTransaction(&client, "UPDATE", interest);
         }
@@ -164,7 +351,7 @@ void undoLastTransaction(FILE *fPtr) {
         fseek(fPtr, (acct - 1) * sizeof(struct clientData), SEEK_SET);
         fread(&client, sizeof(struct clientData), 1, fPtr);
         client.balance -= amount;
-        fseek(fPtr, -sizeof(struct clientData), SEEK_CUR);
+        fseek(fPtr, -(long)sizeof(struct clientData), SEEK_CUR);
         fwrite(&client, sizeof(struct clientData), 1, fPtr);
         printf("Undid last transaction for account %u.\n", acct);
     } else {
